@@ -41,12 +41,23 @@ type Message struct {
 	ARCount uint16
 	QName uint16
 	Questions []Question
+	Answer []ResourceRecord
+	Authority []ResourceRecord
+	Additional []ResourceRecord
 }
 
 type Question struct {
 	Name [][]byte
-	Type uint16
-	Class uint16
+	Type Type
+	Class Class
+}
+
+type ResourceRecord struct {
+	Name [][]byte
+	Type Type
+	Class Class
+	TTL uint32
+	Data []byte
 }
 
 type Type uint16
@@ -122,8 +133,19 @@ func (m *Message) Marshal() []byte {
 			binary.Write(buf, binary.BigEndian, byte(len(label)))
 			binary.Write(buf, binary.BigEndian, label)
 		}
+		binary.Write(buf, binary.BigEndian, byte(0))
 		binary.Write(buf, binary.BigEndian, q.Type)
 		binary.Write(buf, binary.BigEndian, q.Class)
+	}
+
+	for _, rr := range m.Answer {
+		encodeResourceRecord(buf, rr)
+	}
+	for _, rr := range m.Authority {
+		encodeResourceRecord(buf, rr)
+	}
+	for _, rr := range m.Additional {
+		encodeResourceRecord(buf, rr)
 	}
 
 	return buf.Bytes()
@@ -167,6 +189,21 @@ func Unmarshal(b []byte, m *Message) error {
 		m.Questions = append(m.Questions, decodeQuestion(buf))
 	}
 
+	var ansRead uint16
+	for ; ansRead < m.AnCount; ansRead++ {
+		m.Answer = append(m.Answer, decodeResourceRecord(buf))
+	}
+
+	var nsRead uint16
+	for ; nsRead < m.NSCount; nsRead++ {
+		m.Authority = append(m.Authority, decodeResourceRecord(buf))
+	}
+
+	var arRead uint16
+	for ; arRead < m.ARCount; arRead++ {
+		m.Additional = append(m.Additional, decodeResourceRecord(buf))
+	}
+
 	return nil
 }
 
@@ -187,4 +224,42 @@ func decodeQuestion(buf io.Reader) Question {
 	binary.Read(buf, binary.BigEndian, &q.Class)
 
 	return q
+}
+
+func decodeResourceRecord(buf io.Reader) ResourceRecord {
+	rr := ResourceRecord{}
+
+	for {
+		var labelLen byte
+		binary.Read(buf, binary.BigEndian, &labelLen)
+		if labelLen == 0 {
+			break
+		}
+		label := make([]byte, labelLen)
+		buf.Read(label)
+		rr.Name = append(rr.Name, label)
+	}
+	binary.Read(buf, binary.BigEndian, &rr.Type)
+	binary.Read(buf, binary.BigEndian, &rr.Class)
+	binary.Read(buf, binary.BigEndian, &rr.TTL)
+	var dataLen uint16
+	binary.Read(buf, binary.BigEndian, &dataLen)
+	data := make([]byte, dataLen)
+	buf.Read(data)
+	rr.Data = data
+	return rr
+}
+
+func encodeResourceRecord(buf io.Writer, rr ResourceRecord) {
+	for _, label := range rr.Name {
+		binary.Write(buf, binary.BigEndian, byte(len(label)))
+		binary.Write(buf, binary.BigEndian, label)
+	}
+	binary.Write(buf, binary.BigEndian, byte(0))
+
+	binary.Write(buf, binary.BigEndian, rr.Type)
+	binary.Write(buf, binary.BigEndian, rr.Class)
+	binary.Write(buf, binary.BigEndian, rr.TTL)
+	binary.Write(buf, binary.BigEndian, uint16(len(rr.Data)))
+	buf.Write(rr.Data)
 }
