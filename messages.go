@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
+	"io"
 )
 
 type OpCode byte
@@ -24,6 +25,7 @@ const (
 	ResponseCodeRefused
 )
 
+// TODO: separate Header, etc.
 type Message struct {
 	ID uint16
 	IsResponse bool
@@ -37,7 +39,45 @@ type Message struct {
 	AnCount uint16
 	NSCount uint16
 	ARCount uint16
+	QName uint16
+	Questions []Question
 }
+
+type Question struct {
+	Name [][]byte
+	Type uint16
+	Class uint16
+}
+
+type Type uint16
+
+const (
+	TypeA = 1 + iota
+	TypeNS
+	TypeMD
+	TypeMF
+	TypeCName
+	TypeSOA
+	TypeMB
+	TypeMG
+	TypeMR
+	TypeNull
+	TypeWKS
+	TypePTR
+	TypeHIinfo
+	TypeMInfo
+	MX
+	TXT
+)
+
+type Class uint16
+
+const (
+	ClassIN = 1 + iota
+	ClassCS
+	ClassCH
+	ClassHS
+)
 
 func (m *Message) Marshal() []byte {
 	b := make([]byte, 0, 12)
@@ -77,6 +117,15 @@ func (m *Message) Marshal() []byte {
 	binary.Write(buf, binary.BigEndian, m.NSCount)
 	binary.Write(buf, binary.BigEndian, m.ARCount)
 
+	for _, q := range m.Questions {
+		for _, label := range q.Name {
+			binary.Write(buf, binary.BigEndian, byte(len(label)))
+			binary.Write(buf, binary.BigEndian, label)
+		}
+		binary.Write(buf, binary.BigEndian, q.Type)
+		binary.Write(buf, binary.BigEndian, q.Class)
+	}
+
 	return buf.Bytes()
 }
 
@@ -113,5 +162,29 @@ func Unmarshal(b []byte, m *Message) error {
 	binary.Read(buf, binary.BigEndian, &m.NSCount)
 	binary.Read(buf, binary.BigEndian, &m.ARCount)
 
+	var qsRead uint16
+	for ; qsRead < m.QdCount; qsRead++ {
+		m.Questions = append(m.Questions, decodeQuestion(buf))
+	}
+
 	return nil
+}
+
+func decodeQuestion(buf io.Reader) Question {
+	q := Question{}
+
+	for {
+		var labelLen byte
+		binary.Read(buf, binary.BigEndian, &labelLen)
+		if labelLen == 0 {
+			break
+		}
+		label := make([]byte, labelLen)
+		buf.Read(label)
+		q.Name = append(q.Name, label)
+	}
+	binary.Read(buf, binary.BigEndian, &q.Type)
+	binary.Read(buf, binary.BigEndian, &q.Class)
+
+	return q
 }
