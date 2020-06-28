@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"io"
-	"log"
 )
 
 type OpCode byte
@@ -184,8 +183,6 @@ func Unmarshal(b []byte, m *Message) error {
 	binary.Read(buf, binary.BigEndian, &m.NSCount)
 	binary.Read(buf, binary.BigEndian, &m.ARCount)
 
-
-
 	var qsRead uint16
 	offset := 12 // skip over header
 	for ; qsRead < m.QdCount; qsRead++ {
@@ -242,15 +239,12 @@ func NewResourceRecordScanner(buf []byte, pos int) *ResourceRecordScanner {
 	return &ResourceRecordScanner{
 		buf: buf,
 		pos: pos,
-		cache: make(map[int]CachedResourceRecord),
-		dereferencingOffset: -1,
 	}
 }
 
 type ResourceRecordScanner struct {
 	buf []byte
 	pos int
-	dereferencingOffset int
 }
 
 // Options for how to deal with pointers:
@@ -267,54 +261,18 @@ func (r *ResourceRecordScanner) decodeRecord() ResourceRecord {
 	rr := ResourceRecord{}
 	startOffset := r.pos
 	recordLen := 0
-	if r.dereferencingOffset != - 1 {
-		startOffset = r.dereferencingOffset
-	}
-	log.Println("STARTING AT OFFSET:", startOffset)
-	log.Printf("%+v", r.cache)
 
-	buf := bytes.NewBuffer(r.buf[startOffset:])
+	labels, scanned := r.scanLabelsAt(startOffset)
+	rr.Name = labels
 
-	for {
-		var labelLen byte
-		binary.Read(buf, binary.BigEndian, &labelLen)
-		if labelLen == 0 {
-			recordLen += 1
-			break
-		}
-		log.Println("LABEL LEN:", labelLen)
-		if labelLen & 192 == 192 {
-			var dereferencingOffset uint16 = uint16(labelLen & 63) << 7
-			log.Println("BYTE ONE:", labelLen)
-			var offsetSecondByte byte
-			binary.Read(buf, binary.BigEndian, &offsetSecondByte)
-			log.Println("BYTE TWO:", offsetSecondByte)
-			dereferencingOffset += uint16(offsetSecondByte)
-			r.dereferencingOffset = int(dereferencingOffset)
-			log.Println("DEREF", r.dereferencingOffset)
-			ref := r.decodeRecord()
-			r.dereferencingOffset = -1
-			r.pos += recordLen + 2
-			return ResourceRecord{
-				Name: append(rr.Name, ref.Name...),
-				Type: ref.Type,
-				Class: ref.Class,
-				TTL: ref.TTL,
-				Data: ref.Data,
-			}
-		}
-		label := make([]byte, labelLen)
-		buf.Read(label)
-		log.Printf("label: %s", label)
-		rr.Name = append(rr.Name, label)
-		recordLen += int(labelLen + 1)
-	}
+	buf := bytes.NewBuffer(r.buf[startOffset + scanned:])
+	recordLen += scanned
+
 	binary.Read(buf, binary.BigEndian, &rr.Type)
 	recordLen += 2
 	binary.Read(buf, binary.BigEndian, &rr.Class)
 	recordLen += 2
 	binary.Read(buf, binary.BigEndian, &rr.TTL)
-	log.Println("TTL", rr.TTL)
 	recordLen += 4
 	var dataLen uint16
 	binary.Read(buf, binary.BigEndian, &dataLen)
@@ -322,12 +280,36 @@ func (r *ResourceRecordScanner) decodeRecord() ResourceRecord {
 	buf.Read(data)
 	rr.Data = data
 	recordLen += int(dataLen + 2)
-	r.cache[startOffset] = CachedResourceRecord{
-		len: recordLen,
-		ResourceRecord: rr,
-	}
-	if r.dereferencingOffset == -1 { r.pos += recordLen }
+	r.pos += recordLen
 	return rr
+}
+
+func (r *ResourceRecordScanner) scanLabelsAt(startOffset int) ([][]byte, int) {
+	buf := bytes.NewBuffer(r.buf[startOffset:])
+	var labels [][]byte
+	var scanned int
+
+	for {
+		var labelLen byte
+		binary.Read(buf, binary.BigEndian, &labelLen)
+		// termination of labels
+		if labelLen == 0 {
+			return labels, scanned + 1
+		}
+		if labelLen & 192 == 192 {
+			// scanLabelsAt this position
+			var dereferencingOffset uint16 = uint16(labelLen & 63) << 7
+			var offsetSecondByte byte
+			binary.Read(buf, binary.BigEndian, &offsetSecondByte)
+			dereferencingOffset += uint16(offsetSecondByte)
+			ptrLabels, _ := r.scanLabelsAt(int(dereferencingOffset))
+			return append(labels, ptrLabels...), scanned + 2
+		}
+		label := make([]byte, labelLen)
+		buf.Read(label)
+		labels = append(labels, label)
+		scanned += int(labelLen) + 1
+	}
 }
 
 func encodeResourceRecord(buf io.Writer, rr ResourceRecord) {

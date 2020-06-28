@@ -171,6 +171,137 @@ func TestUnmarshal(t *testing.T) {
 				},
 			},
 		},
+
+		{
+			Description: "A message with pointers",
+			Bytes: []byte{
+				1, 44, 143, 133, 0, 3, 0, 3, 0, 0, 0, 0,
+
+				// Questions
+				// Question 1
+				1, byte('f'),
+				3, byte('i'), byte('s'), byte('i'),
+				4, byte('a'), byte('r'), byte('p'), byte('a'),
+				0,
+				// A
+				0, 1,
+				// IN
+				0, 1,
+				// Question 2
+				3, byte('f'), byte('o'), byte('o'),
+				1, byte('f'),
+				3, byte('i'), byte('s'), byte('i'),
+				4, byte('a'), byte('r'), byte('p'), byte('a'),
+				0,
+				// A
+				0, 1,
+				// IN
+				0, 1,
+				// Question 3
+				4, byte('a'), byte('r'), byte('p'), byte('a'),
+				0,
+				// A
+				0, 1,
+				// IN
+				0, 1,
+
+				// Answers
+				// Answer 1
+				1, byte('f'),
+				3, byte('i'), byte('s'), byte('i'),
+				4, byte('a'), byte('r'), byte('p'), byte('a'),
+				0,
+				// A
+				0, 1,
+				// IN
+				0, 1,
+				// TTL
+				0, 0, 0, 10,
+				// Data length
+				0, 4,
+				// Data
+				8, 8, 8, 8,
+				// Answer 2
+				3, byte('f'), byte('o'), byte('o'),
+				192, 58,
+				// A
+				0, 1,
+				// IN
+				0, 1,
+				// TTL
+				0, 0, 0, 10,
+				// Data length
+				0, 4,
+				// Data
+				8, 8, 8, 8,
+				// Answer 3
+				192, 64,
+				// A
+				0, 1,
+				// IN
+				0, 1,
+				// TTL
+				0, 0, 0, 10,
+				// Data length
+				0, 4,
+				// Data
+				8, 8, 8, 8,
+			},
+			Expected: Message{
+				ID:                  300,
+				IsResponse:          true,
+				OpCode:              OpCodeInverse,
+				AuthoritativeAnswer: true,
+				Truncated:           true,
+				RecursionDesired:    true,
+				RecursionAvailable:  true,
+				ResponseCode:        ResponseCodeRefused,
+				QdCount:             3,
+				AnCount:             3,
+				NSCount:             0,
+				ARCount:             0,
+				Questions: []Question{
+					{
+						Name:  [][]byte{[]byte("f"), []byte("isi"), []byte("arpa")},
+						Type:  TypeA,
+						Class: ClassIN,
+					},
+					{
+						Name:  [][]byte{[]byte("foo"), []byte("f"), []byte("isi"), []byte("arpa")},
+						Type:  TypeA,
+						Class: ClassIN,
+					},
+					{
+						Name:  [][]byte{[]byte("arpa")},
+						Type:  TypeA,
+						Class: ClassIN,
+					},
+				},
+				Answer: []ResourceRecord{
+					{
+						Name:  [][]byte{[]byte("f"), []byte("isi"), []byte("arpa")},
+						Type:  TypeA,
+						Class: ClassIN,
+						TTL:   10,
+						Data:  []byte{8, 8, 8, 8},
+					},
+					{
+						Name:  [][]byte{[]byte("foo"), []byte("f"), []byte("isi"), []byte("arpa")},
+						Type:  TypeA,
+						Class: ClassIN,
+						TTL:   10,
+						Data:  []byte{8, 8, 8, 8},
+					},
+					{
+						Name:  [][]byte{[]byte("arpa")},
+						Type:  TypeA,
+						Class: ClassIN,
+						TTL:   10,
+						Data:  []byte{8, 8, 8, 8},
+					},
+				},
+			},
+		},
 	}
 	for _, test := range tests {
 		m := Message{}
