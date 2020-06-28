@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"io"
+	"log"
 )
 
 type OpCode byte
@@ -39,7 +40,6 @@ type Message struct {
 	AnCount uint16
 	NSCount uint16
 	ARCount uint16
-	QName uint16
 	Questions []Question
 	Answer []ResourceRecord
 	Authority []ResourceRecord
@@ -184,69 +184,149 @@ func Unmarshal(b []byte, m *Message) error {
 	binary.Read(buf, binary.BigEndian, &m.NSCount)
 	binary.Read(buf, binary.BigEndian, &m.ARCount)
 
+
+
 	var qsRead uint16
+	offset := 12 // skip over header
 	for ; qsRead < m.QdCount; qsRead++ {
-		m.Questions = append(m.Questions, decodeQuestion(buf))
+		q, n := decodeQuestion(buf)
+		// A bug happened because I forgot to set the offset of the ResourceScanner to 12 +
+		// the question section length
+		offset += n
+		m.Questions = append(m.Questions, q)
 	}
 
+	scanner := NewResourceRecordScanner(b, offset)
 	var ansRead uint16
 	for ; ansRead < m.AnCount; ansRead++ {
-		m.Answer = append(m.Answer, decodeResourceRecord(buf))
+		m.Answer = append(m.Answer, scanner.decodeRecord())
 	}
 
 	var nsRead uint16
 	for ; nsRead < m.NSCount; nsRead++ {
-		m.Authority = append(m.Authority, decodeResourceRecord(buf))
+		m.Authority = append(m.Authority, scanner.decodeRecord())
 	}
 
 	var arRead uint16
 	for ; arRead < m.ARCount; arRead++ {
-		m.Additional = append(m.Additional, decodeResourceRecord(buf))
+		m.Additional = append(m.Additional, scanner.decodeRecord())
 	}
 
 	return nil
 }
 
-func decodeQuestion(buf io.Reader) Question {
+func decodeQuestion(buf io.Reader) (Question, int) {
 	q := Question{}
+	n := 0
 
 	for {
 		var labelLen byte
 		binary.Read(buf, binary.BigEndian, &labelLen)
 		if labelLen == 0 {
+			n += 1
 			break
 		}
 		label := make([]byte, labelLen)
 		buf.Read(label)
 		q.Name = append(q.Name, label)
+		n += int(labelLen + 1)
 	}
 	binary.Read(buf, binary.BigEndian, &q.Type)
 	binary.Read(buf, binary.BigEndian, &q.Class)
+	n += 4
 
-	return q
+	return q, n
 }
 
-func decodeResourceRecord(buf io.Reader) ResourceRecord {
+func NewResourceRecordScanner(buf []byte, pos int) *ResourceRecordScanner {
+	return &ResourceRecordScanner{
+		buf: buf,
+		pos: pos,
+		cache: make(map[int]CachedResourceRecord),
+		dereferencingOffset: -1,
+	}
+}
+
+type ResourceRecordScanner struct {
+	buf []byte
+	pos int
+	dereferencingOffset int
+}
+
+// Options for how to deal with pointers:
+// * Parse every resource record, leaving unresolved pointers in the parsed record.
+// Index every record by the offset, then go through and resolve each pointer
+// * Every time we encounter a pointer, seek to that offset and decode it, then append its information
+// to the current record
+// * Combination: every time we encounter a pointer, seek to that offset and decode it, then append
+// its information to the current record. Also keep a cache of the offset -> records we've read so far
+// and whenever we encounter an offset, check if we've already parsed it
+
+// A bug! I initially figured I could just implement the pointer stuff later, but no such luck of course
+func (r *ResourceRecordScanner) decodeRecord() ResourceRecord {
 	rr := ResourceRecord{}
+	startOffset := r.pos
+	recordLen := 0
+	if r.dereferencingOffset != - 1 {
+		startOffset = r.dereferencingOffset
+	}
+	log.Println("STARTING AT OFFSET:", startOffset)
+	log.Printf("%+v", r.cache)
+
+	buf := bytes.NewBuffer(r.buf[startOffset:])
 
 	for {
 		var labelLen byte
 		binary.Read(buf, binary.BigEndian, &labelLen)
 		if labelLen == 0 {
+			recordLen += 1
 			break
+		}
+		log.Println("LABEL LEN:", labelLen)
+		if labelLen & 192 == 192 {
+			var dereferencingOffset uint16 = uint16(labelLen & 63) << 7
+			log.Println("BYTE ONE:", labelLen)
+			var offsetSecondByte byte
+			binary.Read(buf, binary.BigEndian, &offsetSecondByte)
+			log.Println("BYTE TWO:", offsetSecondByte)
+			dereferencingOffset += uint16(offsetSecondByte)
+			r.dereferencingOffset = int(dereferencingOffset)
+			log.Println("DEREF", r.dereferencingOffset)
+			ref := r.decodeRecord()
+			r.dereferencingOffset = -1
+			r.pos += recordLen + 2
+			return ResourceRecord{
+				Name: append(rr.Name, ref.Name...),
+				Type: ref.Type,
+				Class: ref.Class,
+				TTL: ref.TTL,
+				Data: ref.Data,
+			}
 		}
 		label := make([]byte, labelLen)
 		buf.Read(label)
+		log.Printf("label: %s", label)
 		rr.Name = append(rr.Name, label)
+		recordLen += int(labelLen + 1)
 	}
 	binary.Read(buf, binary.BigEndian, &rr.Type)
+	recordLen += 2
 	binary.Read(buf, binary.BigEndian, &rr.Class)
+	recordLen += 2
 	binary.Read(buf, binary.BigEndian, &rr.TTL)
+	log.Println("TTL", rr.TTL)
+	recordLen += 4
 	var dataLen uint16
 	binary.Read(buf, binary.BigEndian, &dataLen)
 	data := make([]byte, dataLen)
 	buf.Read(data)
 	rr.Data = data
+	recordLen += int(dataLen + 2)
+	r.cache[startOffset] = CachedResourceRecord{
+		len: recordLen,
+		ResourceRecord: rr,
+	}
+	if r.dereferencingOffset == -1 { r.pos += recordLen }
 	return rr
 }
 
